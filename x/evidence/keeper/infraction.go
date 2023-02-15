@@ -24,14 +24,25 @@ import (
 // TODO: Some of the invalid constraints listed above may need to be reconsidered
 // in the case of a lunatic attack.
 func (k Keeper) HandleEquivocationEvidence(ctx sdk.Context, evidence *types.Equivocation) {
+
 	logger := k.Logger(ctx)
+
+	logger.Debug("handling equivocation evidence", "evidence", &evidence)
+
 	consAddr := evidence.GetConsensusAddress()
+	logger.Debug("consensus address obtained", "consensus_address", consAddr)
 
 	// calculate the age of the evidence
 	infractionHeight := evidence.GetHeight()
+	logger.Debug("evidence height", "infraction_height", infractionHeight)
+
 	infractionTime := evidence.GetTime()
+	logger.Debug("evidence time", "infraction_time", infractionTime)
+
 	ageDuration := ctx.BlockHeader().Time.Sub(infractionTime)
 	ageBlocks := ctx.BlockHeader().Height - infractionHeight
+
+	logger.Debug("evidence age", "age_duration", ageDuration, "age_blocks", ageBlocks)
 
 	// Reject evidence if the double-sign is too old. Evidence is considered stale
 	// if the difference in time and number of blocks is greater than the allowed
@@ -51,8 +62,14 @@ func (k Keeper) HandleEquivocationEvidence(ctx sdk.Context, evidence *types.Equi
 		}
 	}
 
+	logger.Debug("evidence is not too old, HandleEquivocationEvidence will continue",
+		"max_age_duration", cp.Evidence.MaxAgeDuration, "max_age_num_blocks", cp.Evidence.MaxAgeNumBlocks)
+
+	// From logs posted in slack, the issue might be this call below.
 	validator := k.stakingKeeper.ValidatorByConsAddr(ctx, consAddr)
+
 	if validator == nil || validator.IsUnbonded() {
+		logger.Debug("validator is nil or unbonded, HandleEquivocationEvidence will return")
 		// Defensive: Simulation doesn't take unbonding periods into account, and
 		// Tendermint might break this assumption at some point.
 		return
@@ -61,6 +78,8 @@ func (k Keeper) HandleEquivocationEvidence(ctx sdk.Context, evidence *types.Equi
 	// ignore the public keys when validators don't have an operator address
 	if !validator.GetOperator().Empty() {
 		if _, err := k.slashingKeeper.GetPubkey(ctx, consAddr.Bytes()); err != nil {
+
+			logger.Debug("pub key not found from slashing keeper, HandleEquivocationEvidence will return")
 			// Ignore evidence that cannot be handled.
 			//
 			// NOTE: We used to panic with:
@@ -104,6 +123,8 @@ func (k Keeper) HandleEquivocationEvidence(ctx sdk.Context, evidence *types.Equi
 	// That's fine since this is just used to filter unbonding delegations & redelegations.
 	distributionHeight := infractionHeight - sdk.ValidatorUpdateDelay
 
+	logger.Debug("distribution height", "distribution_height", distributionHeight)
+
 	// Slash validator. The `power` is the int64 power of the validator as provided
 	// to/by Tendermint. This value is validator.Tokens as sent to Tendermint via
 	// ABCI, and now received as evidence. The fraction is passed in to separately
@@ -116,13 +137,19 @@ func (k Keeper) HandleEquivocationEvidence(ctx sdk.Context, evidence *types.Equi
 		stakingtypes.DoubleSign,
 	)
 
+	logger.Debug("validator slashed")
+
 	// Jail the validator if not already jailed. This will begin unbonding the
 	// validator if not already unbonding (tombstoned).
 	if !validator.IsJailed() {
 		k.slashingKeeper.Jail(ctx, consAddr)
+		logger.Debug("validator jailed")
 	}
 
 	k.slashingKeeper.JailUntil(ctx, consAddr, types.DoubleSignJailEndTime)
+	logger.Debug("validator jailed until", "end_time", types.DoubleSignJailEndTime)
 	k.slashingKeeper.Tombstone(ctx, consAddr)
+	logger.Debug("validator tombstoned")
 	k.SetEvidence(ctx, evidence)
+	logger.Debug("evidence set")
 }
